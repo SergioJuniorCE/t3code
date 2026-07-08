@@ -403,6 +403,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             return;
           }
           if (next.reason === "application-active") {
+            // Foreground probes catch half-open sockets after resume. A timeout
+            // alone is not enough to tear down the lease: a busy-but-alive
+            // backend (active turns, VCS, large snapshots) can miss a single
+            // serverGetConfig window. Transport failures still reconnect;
+            // true half-open sockets are also caught by the RPC pinger.
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({
                 duration: CONNECTION_PROBE_TIMEOUT,
@@ -414,6 +419,19 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                     }),
                   ),
               }),
+              Effect.catchTag("ConnectionTransientError", (error) =>
+                error.reason === "timeout"
+                  ? Effect.logWarning(
+                      "Foreground connection health check timed out; keeping the live session.",
+                    ).pipe(
+                      Effect.annotateLogs({
+                        "environment.id": target.environmentId,
+                        "environment.label": target.label,
+                        "connection.probe.timeout": CONNECTION_PROBE_TIMEOUT,
+                      }),
+                    )
+                  : Effect.fail(error),
+              ),
               Effect.forkChild,
             );
             for (;;) {
