@@ -141,7 +141,7 @@ private final class ComposerTextView: UITextView {
     replace(textRange, withText: "")
   }
 
-  private func loadImages(from providers: [NSItemProvider]) {
+  func loadImages(from providers: [NSItemProvider]) {
     let group = DispatchGroup()
     let lock = NSLock()
     var images = [UIImage?](repeating: nil, count: providers.count)
@@ -282,7 +282,7 @@ private final class ComposerTextView: UITextView {
   }
 }
 
-public final class T3ComposerEditorView: ExpoView, UITextViewDelegate {
+public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDropDelegate {
   private let textView = ComposerTextView()
   private let placeholderLabel = UILabel()
   private var value = ""
@@ -300,7 +300,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate {
     skillText: "#a21caf",
     fileTint: "#737373"
   )
-  private var fontFamily = "DMSans_400Regular"
+  private var fontFamily = "DMSans-Regular"
   private var fontSize: CGFloat = 14
   private var lineHeight: CGFloat = 20
   private var contentInsetVertical: CGFloat = 0
@@ -326,6 +326,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate {
 
     clipsToBounds = false
     textView.delegate = self
+    textView.textDropDelegate = self
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.textContainer.lineFragmentPadding = 0
@@ -500,6 +501,41 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate {
     return true
   }
 
+  public func textDroppableView(
+    _ textDroppableView: UIView & UITextDroppable,
+    proposalForDrop drop: UITextDropRequest
+  ) -> UITextDropProposal {
+    guard droppedImageProviders(in: drop) != nil else {
+      return drop.suggestedProposal
+    }
+
+    // The composer owns image drops so UIKit does not insert NSTextAttachments
+    // that the controlled plain-text value cannot represent.
+    let proposal = UITextDropProposal(operation: .copy)
+    proposal.dropAction = .insert
+    proposal.dropPerformer = .delegate
+    return proposal
+  }
+
+  public func textDroppableView(
+    _ textDroppableView: UIView & UITextDroppable,
+    willPerformDrop drop: UITextDropRequest
+  ) {
+    guard let imageProviders = droppedImageProviders(in: drop) else {
+      return
+    }
+    textView.loadImages(from: imageProviders)
+  }
+
+  private func droppedImageProviders(in drop: UITextDropRequest) -> [NSItemProvider]? {
+    let providers = drop.dropSession.items.map(\.itemProvider)
+    guard !providers.isEmpty,
+          providers.allSatisfy({ $0.canLoadObject(ofClass: UIImage.self) }) else {
+      return nil
+    }
+    return providers
+  }
+
   public func textViewDidBeginEditing(_ textView: UITextView) {
     onComposerFocus()
   }
@@ -608,7 +644,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate {
     iconImage: UIImage?,
     style: ComposerChipStyle
   ) -> UIImage {
-    let font = UIFont(name: "DMSans_500Medium", size: max(12, fontSize - 2))
+    let font = UIFont(name: "DMSans-Medium", size: max(12, fontSize - 2))
       ?? UIFont.systemFont(ofSize: max(12, fontSize - 2), weight: .medium)
     let fallbackIcon = UIImage(
       systemName: iconName,

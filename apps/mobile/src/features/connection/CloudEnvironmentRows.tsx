@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import {
   connectionStatusText,
   type EnvironmentConnectionPhase,
@@ -21,29 +21,68 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { useThemeColor } from "../../lib/useThemeColor";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { availableCloudEnvironmentPresentation } from "../cloud/cloudEnvironmentPresentation";
+import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 import { type RelayEnvironmentView, useConnectionController } from "./useConnectionController";
 
-/**
- * "T3 Connect" section: every environment published to the signed-in account,
- * with connect switches, availability status, refresh, and loading/error
- * states. Shared between the Settings environments screen and the T3 Connect
- * onboarding sheet.
- */
-export function CloudEnvironmentRows(props: {
+interface CloudEnvironmentRowsProps {
   readonly connectedCloudEnvironments: ReadonlyArray<ConnectedEnvironmentSummary>;
   readonly onReconnectEnvironment: (environmentId: EnvironmentId) => void;
+  readonly showcaseAvailableEnvironments?: ReadonlyArray<RelayEnvironmentView>;
+  readonly showcaseSignedIn?: boolean;
   /**
    * Hide the "T3 Connect" section title + refresh button for hosts that
    * provide their own chrome (the onboarding sheet's native header and
    * pull-to-refresh).
    */
   readonly showHeader?: boolean;
-}) {
+}
+
+/**
+ * "T3 Connect" section: every environment published to the signed-in account,
+ * with connect switches, availability status, refresh, and loading/error
+ * states. Shared between the Settings environments screen and the T3 Connect
+ * onboarding sheet.
+ *
+ * Already-connected relay environments render even without cloud config or a
+ * signed-in account — they are registered on this device and must stay
+ * reachable and removable. Only discovery (the available list, refresh, and
+ * its errors) requires a signed-in session.
+ */
+export function CloudEnvironmentRows(props: CloudEnvironmentRowsProps) {
+  // Showcase captures run without a Clerk publishable key, so `ClerkProvider`
+  // is never mounted and any `useAuth` call throws — the fixture states whether
+  // the rows are signed in instead of asking Clerk.
+  if (props.showcaseSignedIn !== undefined) {
+    return props.showcaseSignedIn ? <CloudEnvironmentRowsContent {...props} /> : null;
+  }
+  // No cloud config means no `ClerkProvider` either, so `useAuth` would throw.
+  if (!hasCloudPublicConfig()) {
+    return <ConnectedOnlyCloudEnvironmentRows {...props} />;
+  }
+  return <SignedInCloudEnvironmentRows {...props} />;
+}
+
+function SignedInCloudEnvironmentRows(props: CloudEnvironmentRowsProps) {
   const { isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
+  if (!isSignedIn) return <ConnectedOnlyCloudEnvironmentRows {...props} />;
+  return <CloudEnvironmentRowsContent {...props} />;
+}
+
+function ConnectedOnlyCloudEnvironmentRows(props: CloudEnvironmentRowsProps) {
+  if (props.connectedCloudEnvironments.length === 0) return null;
+  return <CloudEnvironmentRowsContent {...props} discoveryAvailable={false} />;
+}
+
+function CloudEnvironmentRowsContent(
+  props: CloudEnvironmentRowsProps & { readonly discoveryAvailable?: boolean },
+) {
   const controller = useConnectionController();
   const iconColor = useThemeColor("--color-icon");
-  const availableCloudEnvironments = controller.availableRelayEnvironments;
+  const discoveryAvailable = props.discoveryAvailable ?? true;
+  const availableCloudEnvironments = discoveryAvailable
+    ? (props.showcaseAvailableEnvironments ?? controller.availableRelayEnvironments)
+    : [];
   const [expandedErrorId, setExpandedErrorId] = useState<string | null>(null);
   const hasCloudRows =
     props.connectedCloudEnvironments.length > 0 || availableCloudEnvironments.length > 0;
@@ -64,32 +103,32 @@ export function CloudEnvironmentRows(props: {
 
   const showHeader = props.showHeader ?? true;
 
-  if (!isSignedIn) return null;
-
   return (
     <View collapsable={false} className={cn("gap-3", showHeader && "mt-5")}>
       {showHeader ? (
         <View className="flex-row items-center justify-between px-1">
           <Text className="text-sm font-t3-bold uppercase text-foreground-muted">T3 Connect</Text>
-          <Pressable
-            accessibilityRole="button"
-            disabled={controller.relayDiscovery.isRefreshing}
-            onPress={() => {
-              void controller.refreshRelayEnvironments();
-            }}
-            className="h-9 w-9 items-center justify-center rounded-full bg-subtle active:opacity-70 disabled:opacity-50"
-          >
-            {controller.relayDiscovery.isRefreshing ? (
-              <ActivityIndicator color={iconColor} size="small" />
-            ) : (
-              <SymbolView
-                name="arrow.clockwise"
-                size={14}
-                tintColor={iconColor}
-                type="monochrome"
-              />
-            )}
-          </Pressable>
+          {discoveryAvailable ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={controller.relayDiscovery.isRefreshing}
+              onPress={() => {
+                void controller.refreshRelayEnvironments();
+              }}
+              className="h-9 w-9 items-center justify-center rounded-full bg-subtle active:opacity-70 disabled:opacity-50"
+            >
+              {controller.relayDiscovery.isRefreshing ? (
+                <ActivityIndicator color={iconColor} size="small" />
+              ) : (
+                <SymbolView
+                  name="arrow.clockwise"
+                  size={14}
+                  tintColor={iconColor}
+                  type="monochrome"
+                />
+              )}
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
@@ -134,7 +173,9 @@ export function CloudEnvironmentRows(props: {
 
       {/* Rendered alongside any connected rows — a failed discovery must not
           hide behind an otherwise-healthy list. */}
-      {controller.relayDiscovery.error && !controller.relayDiscovery.isRefreshing ? (
+      {discoveryAvailable &&
+      controller.relayDiscovery.error &&
+      !controller.relayDiscovery.isRefreshing ? (
         <View collapsable={false} className="gap-3 rounded-[24px] bg-card p-5">
           <Text className="text-base font-t3-bold text-foreground">
             Could not load T3 Connect environments
@@ -297,9 +338,8 @@ function CloudEnvironmentRowShell(props: {
         {props.connectionError ? (
           <Text
             aria-hidden
-            className={cn("absolute left-0 right-0 text-xs", statusClassName)}
             onTextLayout={onMeasuredErrorTextLayout}
-            style={{ opacity: 0, zIndex: -1 }}
+            className={cn("absolute inset-x-0 -z-[1] text-xs opacity-0", statusClassName)}
           >
             {measuredErrorText}
           </Text>
@@ -321,7 +361,7 @@ function CloudEnvironmentRowShell(props: {
                 <Text
                   accessibilityHint="Copies the trace ID"
                   accessibilityRole="button"
-                  className={cn("text-xs underline", statusClassName)}
+                  className={cn("text-xs underline decoration-dotted", statusClassName)}
                   onLongPress={(event) => {
                     event.stopPropagation();
                     copyTextWithHaptic(errorTraceId, { target: "connection-trace-id" });
@@ -329,7 +369,6 @@ function CloudEnvironmentRowShell(props: {
                   onPress={(event) => {
                     event.stopPropagation();
                   }}
-                  style={{ textDecorationStyle: "dotted" }}
                 >
                   {errorTraceId}
                 </Text>
